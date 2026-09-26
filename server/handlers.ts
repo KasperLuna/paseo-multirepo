@@ -119,6 +119,8 @@ export async function diffHandler(input: {
   root: string;
   path: string;
   mode: "working" | "staged";
+  context?: number;
+  ignoreWhitespace?: boolean;
 }): Promise<{ patch: string; truncated: boolean }> {
   const cwd = path.resolve(input.cwd);
   const root = path.resolve(input.root);
@@ -127,18 +129,23 @@ export async function diffHandler(input: {
   resolveInside(root, input.path);
 
   const staged = input.mode === "staged";
+  const context = input.context ?? 3;
+  const whitespace = input.ignoreWhitespace ? ["--ignore-all-space"] : [];
   const patch =
     !staged && !(await isTracked(root, input.path))
-      ? await runGit(root, ["diff", "--no-index", "--", "/dev/null", input.path], {
-          maxBuffer: MAX_PATCH_BYTES + 4096,
-        })
+      ? await runGit(
+          root,
+          ["diff", "--no-index", ...whitespace, "--", "/dev/null", input.path],
+          { maxBuffer: MAX_PATCH_BYTES + 4096 },
+        )
       : await runGit(
           root,
           [
             "diff",
             "--no-ext-diff",
             "--no-textconv",
-            "-U3",
+            ...whitespace,
+            `-U${context}`,
             ...(staged ? ["--cached"] : []),
             "--",
             input.path,

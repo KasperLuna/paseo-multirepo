@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildFileRows, parseNumstat, parsePorcelainV2 } from "../shared/parse.ts";
+import {
+  buildFileRows,
+  buildSplitRows,
+  intraLineSpans,
+  parseNumstat,
+  parsePatch,
+  parsePorcelainV2,
+} from "../shared/parse.ts";
 
 test("parsePorcelainV2 reads branch, ahead/behind, and change kinds", () => {
   const out =
@@ -31,6 +38,94 @@ test("parseNumstat reads counts and rename pairs", () => {
   assert.deepEqual(map.get("src/app.ts"), { additions: 5, deletions: 2 });
   assert.deepEqual(map.get("new.ts"), { additions: 0, deletions: 0 });
   assert.deepEqual(map.get("assets/logo.png"), { additions: 0, deletions: 0 });
+});
+
+test("parsePatch tracks old/new line numbers across hunks", () => {
+  const patch = [
+    "diff --git a/src/app.ts b/src/app.ts",
+    "index aaa..bbb 100644",
+    "--- a/src/app.ts",
+    "+++ b/src/app.ts",
+    "@@ -1,3 +1,4 @@",
+    " const a = 1;",
+    "-const b = 2;",
+    "+const b = 20;",
+    "+const c = 3;",
+    " export {};",
+    "@@ -10,1 +11,1 @@",
+    "-old",
+    "+new",
+  ].join("\n");
+
+  const files = parsePatch(patch);
+  assert.equal(files.length, 1);
+  assert.equal(files[0].newPath, "src/app.ts");
+  assert.equal(files[0].hunks.length, 2);
+
+  const first = files[0].hunks[0];
+  assert.equal(first.oldStart, 1);
+  assert.equal(first.newStart, 1);
+  assert.deepEqual(
+    first.lines.map((line) => `${line.kind}:${line.oldNo}:${line.newNo}`),
+    ["ctx:1:1", "del:2:null", "add:null:2", "add:null:3", "ctx:3:4"],
+  );
+
+  const second = files[0].hunks[1];
+  assert.equal(second.lines[0].oldNo, 10);
+  assert.equal(second.lines[1].newNo, 11);
+});
+
+test("parsePatch handles multiple files and binary notices", () => {
+  const patch = [
+    "diff --git a/a.txt b/a.txt",
+    "--- a/a.txt",
+    "+++ b/a.txt",
+    "@@ -1 +1 @@",
+    "-x",
+    "+y",
+    "diff --git a/logo.png b/logo.png",
+    "Binary files a/logo.png and b/logo.png differ",
+  ].join("\n");
+
+  const files = parsePatch(patch);
+  assert.equal(files.length, 2);
+  assert.equal(files[0].binary, false);
+  assert.equal(files[1].binary, true);
+  assert.equal(files[1].hunks.length, 0);
+});
+
+test("parsePatch survives truncation mid-hunk", () => {
+  const patch = [
+    "diff --git a/a.txt b/a.txt",
+    "@@ -1,2 +1,2 @@",
+    " keep",
+    "-gone",
+  ].join("\n");
+  const files = parsePatch(patch);
+  assert.equal(files[0].hunks[0].lines.length, 2);
+  assert.equal(files[0].hunks[0].lines[1].kind, "del");
+});
+
+test("buildSplitRows pairs deletions with additions and pads short sides", () => {
+  const files = parsePatch(
+    ["diff --git a/a b/a", "@@ -1,2 +1,3 @@", " keep", "-one", "+first", "+second"].join("\n"),
+  );
+  const rows = buildSplitRows(files[0].hunks[0], false);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].left?.kind, "ctx");
+  assert.equal(rows[0].right?.kind, "ctx");
+  assert.equal(rows[1].left?.text, "one");
+  assert.equal(rows[1].right?.text, "first");
+  assert.equal(rows[2].left, null);
+  assert.equal(rows[2].right?.text, "second");
+});
+
+test("intraLineSpans marks the changed middle of a paired line", () => {
+  const spans = intraLineSpans("const total = price;", "const total = cost;");
+  assert.deepEqual(spans.leftSpan, { start: 14, end: 19 });
+  assert.deepEqual(spans.rightSpan, { start: 14, end: 18 });
+  assert.equal(intraLineSpans("same", "same").leftSpan, null);
+  assert.equal(intraLineSpans(null, "added").rightSpan, null);
 });
 
 test("buildFileRows nests directories and respects collapse", () => {

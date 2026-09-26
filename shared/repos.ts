@@ -67,6 +67,10 @@ export const reposDiff = defineRpc({
     root: z.string().min(1),
     path: z.string().min(1),
     mode: z.enum(["working", "staged"]),
+    /** Lines of unchanged context per hunk. Default 3; expand raises it. */
+    context: z.number().int().min(0).max(200).optional(),
+    /** Ignore whitespace-only changes, like VS Code's diff toolbar toggle. */
+    ignoreWhitespace: z.boolean().optional(),
   }),
   output: z.object({ patch: z.string(), truncated: z.boolean() }),
 });

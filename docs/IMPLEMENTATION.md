@@ -73,7 +73,12 @@ output: {
 ### `repos.diff`
 
 ```ts
-input:  { cwd: string; root: string; path: string; mode: "working" | "staged" }
+input:  {
+  cwd: string; root: string; path: string;
+  mode: "working" | "staged";
+  context?: number;            // lines of context per hunk (default 3, max 200)
+  ignoreWhitespace?: boolean;  // git --ignore-all-space
+}
 output: { patch: string; truncated: boolean }
 ```
 
@@ -103,6 +108,8 @@ The snapshot is cached per `cwd` for 1.5 s (bypassed by `force`). A failure in o
 
 - **porcelain v2**: header records (`# branch.head`, `# branch.ab`) plus `?` untracked, `u` unmerged, `1` ordinary, and `2` renamed records. `XY` maps to a `RepoFileStatus`; `X !== "."` marks staged.
 - **numstat `-z`**: `add\tdel\tpath` records; renames arrive as an empty path followed by old and new paths.
+- **patch** (`parsePatch`): splits a unified patch into files and hunks, tracking old/new line numbers per line and tolerating multi-file patches, binary notices, `\ No newline` markers, and truncation mid-hunk.
+- **split rows** (`buildSplitRows`): pairs each run of `-` lines with the `+` run that follows it (git's own ordering), padding the shorter side with `null`. This is the old/new position alignment for the side-by-side view. `intraLineSpans` trims common prefix/suffix from a paired line to highlight the changed span.
 - **tree**: files are inserted into a trie; `buildFileRows` flattens it for a given `collapsed` set, aggregating `+/-` for directory rows. Row keys are namespaced by repo root (`${repoRoot}:${path}`).
 
 ### Diff
@@ -112,8 +119,11 @@ The snapshot is cached per `cwd` for 1.5 s (bypassed by `force`). A failure in o
 1. Confirms `root` is a git repo.
 2. `resolveInside(root, path)` rejects absolute paths and `..` traversal.
 3. Untracked + `working` → `git diff --no-index -- /dev/null <path>` (exit code 1 is expected).
-4. Otherwise → `git diff --no-ext-diff --no-textconv -U3 [--cached] -- <path>`.
+4. Otherwise → `git diff --no-ext-diff --no-textconv -U<context> [--ignore-all-space] [--cached] -- <path>`.
 5. Caps output at 2 MiB and flags `truncated`.
+
+`context` (expanded by the toolbar's Expand button) and `ignoreWhitespace` are the only
+client-controlled git flags; both are bounded/validated by the RPC schema.
 
 ## Security
 
@@ -133,8 +143,8 @@ The client display is read-only: no stage, commit, discard, or branch operations
 Two workspace panels plus a tiny client-side store:
 
 - **`client/panel.tsx` (`repos`)** — the file list. Registered for `locations: ["workspace", "explorer"]`, so it appears in the right sidebar beside Files/Changes and as a workspace tab. Reads `directory` from `useWorkspace`, then a TanStack Query keyed `["multirepo", workspaceId, cwd]` with `refetchInterval: 2500` (active only while mounted). Renders a native-Changes-style layout: branch/ahead/behind header with aggregate stats, a file filter (`TextInput`), a collapsible folder tree with per-folder stats, file-type icons, and a right-side open action.
-- **`client/diff-panel.tsx` (`repos-diff`)** — the diff, registered `locations: ["workspace"]` so it opens as a main tab. It reads the current selection from the store and fetches `repos.diff`.
-- **`client/store.ts`** — module state: the captured `PluginClientContext`, the per-workspace file selection, and `openDiffTab()`. Panel props do not include `openPanel`, so the client entry captures the context at contribute time; selecting a file stores the selection and calls `client.openPanel("repos-diff", { workspaceId })`. Paseo reuses the open panel for subsequent files, mirroring the native single comparison tab. `useSyncExternalStore` subscribes the panels to the store.
+- **`client/diff-panel.tsx` (`repos-diff`)** — the diff, registered `locations: ["workspace"]` so it opens as a main tab. It reads the current selection and per-workspace preferences from the store, fetches `repos.diff`, parses the patch with `parsePatch`/`buildSplitRows`, and renders either **split** (two aligned columns with old/new gutters, per-side line numbers, word-level highlight) or **unified** (both gutters, git order) from the same parsed rows. The toolbar toggles layout, word highlight, wrap, ignore-whitespace, context expansion, and prev/next file.
+- **`client/store.ts`** — module state: the captured `PluginClientContext`, the per-workspace file selection, the **traversal list** (sibling files for prev/next navigation), and **per-workspace diff preferences** (layout, word diff, whitespace, wrap, context). Panel props do not include `openPanel`, so the client entry captures the context at contribute time; selecting a file stores the selection + traversal and calls `client.openPanel("repos-diff", { workspaceId })`. `useSyncExternalStore` subscribes the panels to the store.
 
 UI rules honored: React Native primitives only, colors from `theme.colors` (including `statusSuccess`/`statusDanger` for diff and stats), `layout.compact` padding, accessible roles/labels on every `Pressable`, and `ScrollView`/`TextInput`/`Icon` from the host modules so gestures and theming integrate with Paseo.
 
@@ -154,9 +164,12 @@ The contract is deliberately small. Natural next steps, each additive:
 - **Stage/unstage/discard**: add RPC handlers mirroring `checkout.file.*`, gate behind a capability, add row actions.
 - **Inline review to agent**: reuse the workspace attachment mechanism via a plugin panel action.
 - **Watching instead of polling**: replace the client interval with `server.on`/`fs.watch` and push updates over an RPC subscription.
+- **Syntax highlighting**: a tokenizer over `parsePatch`'s `DiffLine.text`, keyed by file extension.
 
 ## Known ceilings
 
 - Untracked additions/deletions are `0` (no `HEAD` diff). Counting would need per-file `--no-index` runs.
 - Auto-discovery is a bounded BFS, not a full filesystem walk; very deep layouts need explicit `roots`.
-- The diff view is plain text, not syntax-highlighted.
+- Split rows use git's deletion-then-addition ordering, not a full LCS alignment; heavily interleaved edits pair less precisely.
+- Word-level highlight is common-prefix/suffix trimming, not a per-character diff.
+- No syntax highlighting.

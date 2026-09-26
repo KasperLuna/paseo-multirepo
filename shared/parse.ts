@@ -115,6 +115,208 @@ export function parseNumstat(out: string): Map<string, { additions: number; dele
   return map;
 }
 
+export type DiffLineKind = "add" | "del" | "ctx";
+
+export interface DiffLine {
+  kind: DiffLineKind;
+  oldNo: number | null;
+  newNo: number | null;
+  text: string;
+}
+
+export interface DiffHunk {
+  header: string;
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  lines: DiffLine[];
+}
+
+export interface DiffFile {
+  header: string[];
+  oldPath: string;
+  newPath: string;
+  binary: boolean;
+  hunks: DiffHunk[];
+}
+
+export interface SplitRow {
+  left: DiffLine | null;
+  right: DiffLine | null;
+  /** Index of the char run that differs within each side, for intra-line highlight. */
+  leftSpan: Span | null;
+  rightSpan: Span | null;
+}
+
+export interface Span {
+  start: number;
+  end: number;
+}
+
+const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+/**
+ * Parse a unified patch into files and hunks with old/new line numbers.
+ * Handles multiple files in one patch (git emits them for renames), binary
+ * notices, and the `\ No newline at end of file` marker.
+ */
+export function parsePatch(patch: string): DiffFile[] {
+  const lines = patch.length > 0 ? patch.split("\n") : [];
+  const files: DiffFile[] = [];
+  let file: DiffFile | null = null;
+  let hunk: DiffHunk | null = null;
+  let oldNo = 0;
+  let newNo = 0;
+
+  const flushHunk = () => {
+    if (file && hunk) file.hunks.push(hunk);
+    hunk = null;
+  };
+  const flushFile = () => {
+    flushHunk();
+    if (file) files.push(file);
+    file = null;
+  };
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      flushFile();
+      const paths = line.slice("diff --git ".length);
+      const { oldPath, newPath } = parseGitPaths(paths);
+      file = { header: [line], oldPath, newPath, binary: false, hunks: [] };
+      continue;
+    }
+    if (!file) continue;
+
+    if (line.startsWith("@@")) {
+      flushHunk();
+      const match = HUNK_RE.exec(line);
+      const oldStart = match ? Number(match[1]) : 0;
+      const oldCount = match?.[2] ? Number(match[2]) : 1;
+      const newStart = match ? Number(match[3]) : 0;
+      const newCount = match?.[4] ? Number(match[4]) : 1;
+      oldNo = oldStart;
+      newNo = newStart;
+      hunk = { header: line, oldStart, oldCount, newStart, newCount, lines: [] };
+      continue;
+    }
+
+    if (hunk) {
+      const marker = line[0];
+      if (marker === "+") {
+        hunk.lines.push({ kind: "add", oldNo: null, newNo: newNo++, text: line.slice(1) });
+      } else if (marker === "-") {
+        hunk.lines.push({ kind: "del", oldNo: oldNo++, newNo: null, text: line.slice(1) });
+      } else if (marker === " ") {
+        hunk.lines.push({ kind: "ctx", oldNo: oldNo++, newNo: newNo++, text: line.slice(1) });
+      } else if (marker === "\\") {
+        // No-newline marker applies to the previous line; nothing to add.
+      } else if (line === "") {
+        // Trailing blank line from the split; ignore.
+      }
+      continue;
+    }
+
+    // Metadata before the first hunk.
+    file.header.push(line);
+    if (/^(Binary files|GIT binary patch)/.test(line)) file.binary = true;
+    if (line.startsWith("--- ")) file.oldPath = stripPathPrefix(line.slice(4));
+    if (line.startsWith("+++ ")) file.newPath = stripPathPrefix(line.slice(4));
+  }
+
+  flushFile();
+  return files;
+}
+
+function stripPathPrefix(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === "/dev/null") return trimmed;
+  const match = /^[ab]\/(.*)$/.exec(trimmed);
+  return match ? match[1] : trimmed;
+}
+
+/** `a/old\tb/new` (with optional quoting) → old/new paths without the a/ b/ prefixes. */
+function parseGitPaths(value: string): { oldPath: string; newPath: string } {
+  const parts = value.split("\t");
+  const oldRaw = parts[0] ?? "";
+  const newRaw = parts[1] ?? parts[0] ?? "";
+  return { oldPath: stripPathPrefix(oldRaw), newPath: stripPathPrefix(newRaw) };
+}
+
+/**
+ * Pair deletions with the additions that follow them into side-by-side rows.
+ * Git emits the `-` run immediately before the `+` run inside a hunk, so
+ * adjacency pairing is exact for typical hunks and needs no extra data.
+ */
+export function buildSplitRows(hunk: DiffHunk, wordDiff: boolean): SplitRow[] {
+  const rows: SplitRow[] = [];
+  let i = 0;
+  const lines = hunk.lines;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.kind === "ctx") {
+      rows.push({ left: line, right: line, leftSpan: null, rightSpan: null });
+      i += 1;
+      continue;
+    }
+    const dels: DiffLine[] = [];
+    const adds: DiffLine[] = [];
+    while (i < lines.length && lines[i].kind === "del") dels.push(lines[i++]);
+    while (i < lines.length && lines[i].kind === "add") adds.push(lines[i++]);
+    const count = Math.max(dels.length, adds.length);
+    const delSpans = wordDiff ? wordDiffSpans(dels.map((d) => d.text)) : null;
+    const addSpans = wordDiff ? wordDiffSpans(adds.map((a) => a.text)) : null;
+    for (let row = 0; row < count; row += 1) {
+      rows.push({
+        left: dels[row] ?? null,
+        right: adds[row] ?? null,
+        leftSpan: delSpans?.[row] ?? null,
+        rightSpan: addSpans?.[row] ?? null,
+      });
+    }
+  }
+  return rows;
+}
+
+/** Common-prefix/suffix trim, then mark the remaining middle as the changed span. */
+function diffSpan(a: string, b: string): Span | null {
+  if (a === b) return null;
+  let start = 0;
+  const max = Math.min(a.length, b.length);
+  while (start < max && a[start] === b[start]) start += 1;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA -= 1;
+    endB -= 1;
+  }
+  return { start, end: endA };
+}
+
+function wordDiffSpans(side: string[]): (Span | null)[] {
+  return side.map((text, index) => {
+    const other = side[index];
+    return other === undefined ? null : diffSpan(text, other);
+  });
+}
+
+/**
+ * Best-effort intra-line spans for paired split rows. Recomputed per row from
+ * the paired line so no cross-row state is needed.
+ */
+export function intraLineSpans(left: string | null, right: string | null): {
+  leftSpan: Span | null;
+  rightSpan: Span | null;
+} {
+  if (left === null || right === null) return { leftSpan: null, rightSpan: null };
+  const leftSpan = diffSpan(left, right);
+  if (leftSpan === null) return { leftSpan: null, rightSpan: null };
+  const rightSpan = diffSpan(right, left);
+  return { leftSpan, rightSpan };
+}
+
 export interface FileRow {
   kind: "dir" | "file";
   key: string;

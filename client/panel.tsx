@@ -7,7 +7,6 @@ import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { buildFileRows, type FileRow } from "../shared/parse";
 import { reposSnapshot, type RepoFile, type RepoInfo } from "../shared/repos";
 import { getSelection, openDiffTab, subscribeSelection } from "./store";
-
 const REFRESH_MS = 2_500;
 
 const CODE_EXT = new Set([
@@ -318,6 +317,7 @@ function RepoSection({
           row={row}
           repoRoot={repo.root}
           repoName={repo.name}
+          files={files}
           workspaceId={workspaceId}
           collapsed={collapsed.has(row.key)}
           active={selection?.root === repo.root && selection?.path === row.path}
@@ -338,6 +338,7 @@ interface RowProps {
   row: FileRow;
   repoRoot: string;
   repoName: string;
+  files: RepoFile[];
   workspaceId: string;
   collapsed: boolean;
   active: boolean;
@@ -350,6 +351,7 @@ function Row({
   row,
   repoRoot,
   repoName,
+  files,
   workspaceId,
   collapsed,
   active,
@@ -395,7 +397,18 @@ function Row({
   }
 
   const open = () =>
-    openDiffTab(workspaceId, { root: repoRoot, repoName, path: row.path, mode: "working" });
+    openDiffTab(
+      workspaceId,
+      { root: repoRoot, repoName, path: row.path, mode: "working" },
+      {
+        files: files.map((file) => ({
+          root: repoRoot,
+          repoName,
+          path: file.path,
+          mode: "working" as const,
+        })),
+      },
+    );
 
   return (
     <View
