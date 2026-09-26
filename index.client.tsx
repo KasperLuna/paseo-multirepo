@@ -18,7 +18,7 @@ export default function contribute(client: PluginClientContext) {
     keywords: ["git", "repos", "diff", "changes"],
     context: "workspace",
     onSelect({ openPanel }) {
-      openPanel("repos");
+      openPanel("repos", { location: "explorer" });
     },
   });
 
