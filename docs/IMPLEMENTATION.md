@@ -6,7 +6,7 @@ How `paseo-multirepo` is built, and why. Read [README.md](../README.md) first fo
 
 Paseo binds a workspace's git features to one directory: the workspace `cwd`. Its diff/status code resolves the toplevel of that single path. A workspace pointing at a parent directory that contains N independent repositories has no repository at its root, so the built-in Changes panel stays empty for the nested repos. Paseo also has no multi-root workspace feature (feature request [#1972](https://github.com/getpaseo/paseo/issues/1972) is unimplemented).
 
-The plugin adds a parallel, read-only view. It never modifies Paseo's built-in git behavior.
+The plugin adds a parallel, read-only view. It never modifies Paseo's built-in git behavior. Paseo does not expose an extension point into the native Changes/Diff panel or its tab navigation, so the plugin reproduces the pattern with its own panels: a file list (sidebar) and a diff panel opened as a main workspace tab.
 
 ## Plugin runtime split
 
@@ -36,8 +36,9 @@ client/panel.tsx
 | `server/discovery.ts`  | daemon  | Config + `.code-workspace` loading, repo discovery.         |
 | `server/handlers.ts`   | daemon  | Snapshot assembly, cache, diff, path validation.            |
 | `server/parse.test.ts` | tests   | Node test runner coverage for the pure logic.               |
-| `client/panel.tsx`     | app     | Workspace panel: list, tree rows, refresh, selection.       |
-| `client/diff.tsx`      | app     | Modal unified-diff renderer.                                |
+| `client/panel.tsx`     | app     | `repos` panel: repo/file tree, filter, stats, selection.    |
+| `client/diff-panel.tsx`| app     | `repos-diff` panel: main-tab unified-diff renderer.         |
+| `client/store.ts`      | app     | Captured client context + per-workspace diff selection.     |
 | `index.client.tsx`     | app     | Registers the workspace panel and Command Center item.      |
 | `index.server.ts`      | daemon  | Registers the RPC handlers.                                 |
 
@@ -129,9 +130,13 @@ The client display is read-only: no stage, commit, discard, or branch operations
 
 ## Client
 
-`ReposPanel` receives `workspaceId` from the panel host, reads `directory` from `useWorkspace`, then runs a TanStack Query keyed `["multirepo", workspaceId, cwd]` with `refetchInterval: 2500` (active only while mounted) and a manual Refresh action. Selecting a file opens `DiffModal`, which fetches `repos.diff` and renders the patch line by line, coloring additions, deletions, hunk headers, and file headers from theme tokens.
+Two workspace panels plus a tiny client-side store:
 
-UI rules honored: React Native primitives only, colors from `theme.colors`, `layout.compact` padding, accessible roles/labels on every `Pressable`, and `ScrollView`/`Modal` from the host module so gestures and theming integrate with Paseo.
+- **`client/panel.tsx` (`repos`)** — the file list. Registered for `locations: ["workspace", "explorer"]`, so it appears in the right sidebar beside Files/Changes and as a workspace tab. Reads `directory` from `useWorkspace`, then a TanStack Query keyed `["multirepo", workspaceId, cwd]` with `refetchInterval: 2500` (active only while mounted). Renders a native-Changes-style layout: branch/ahead/behind header with aggregate stats, a file filter (`TextInput`), a collapsible folder tree with per-folder stats, file-type icons, and a right-side open action.
+- **`client/diff-panel.tsx` (`repos-diff`)** — the diff, registered `locations: ["workspace"]` so it opens as a main tab. It reads the current selection from the store and fetches `repos.diff`.
+- **`client/store.ts`** — module state: the captured `PluginClientContext`, the per-workspace file selection, and `openDiffTab()`. Panel props do not include `openPanel`, so the client entry captures the context at contribute time; selecting a file stores the selection and calls `client.openPanel("repos-diff", { workspaceId })`. Paseo reuses the open panel for subsequent files, mirroring the native single comparison tab. `useSyncExternalStore` subscribes the panels to the store.
+
+UI rules honored: React Native primitives only, colors from `theme.colors` (including `statusSuccess`/`statusDanger` for diff and stats), `layout.compact` padding, accessible roles/labels on every `Pressable`, and `ScrollView`/`TextInput`/`Icon` from the host modules so gestures and theming integrate with Paseo.
 
 ## Testing
 

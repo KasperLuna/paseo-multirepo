@@ -7,9 +7,10 @@ Paseo's built-in Changes panel is bound to a single repository (the workspace `c
 ## Features
 
 - Auto-discovers git repos under the workspace directory (depth-limited), or uses an explicit list.
-- Per-repo header: branch, ahead/behind, dirty state, changed file count.
-- Collapsible directory tree with aggregate `+/-` per folder.
+- Per-repo header: branch, ahead/behind, dirty state, aggregate `+/-` stats.
+- Collapsible directory tree with aggregate `+/-` per folder, file-type icons, and a file filter.
 - Per-file unified diff (working tree and staged), including untracked files.
+- Opening a file focuses a **Repo diff** workspace tab in the main tab area, mirroring Paseo's native Changes → Diff tab flow.
 - Live refresh while the panel is open; manual Refresh button.
 - Works on desktop, web, and mobile; theme-aware; compact layout.
 - Read-only: never stages, commits, or mutates repositories.
@@ -72,10 +73,12 @@ paseo plugin logs paseo-multirepo
 
 1. Open a workspace whose directory contains your repos (for example a folder with `frontend/`, `backend/`, and `infra/`).
 2. Open the **Repos** panel:
-   - It appears as a workspace tab option (alongside Files/Changes), or
-   - Command Center (`⌘K` / `Ctrl+K`) → **Open multi-repo changes**.
-3. Expand a repo, then a folder, then tap a file to see its diff.
-4. Press **Refresh** to force a re-read; the panel otherwise polls every 2.5 s while open.
+   - It lives in the right sidebar (Explorer) alongside **Files** and **Changes**, or
+   - Command Center (`⌘K` / `Ctrl+K`) → **Open multi-repo changes** opens it in the sidebar.
+3. Expand a repo, then a folder, then tap a file. Its diff opens in a **Repo diff** tab in the main tab area (the same panel is reused for the next file, like Paseo's built-in diff tab).
+4. Use the filter box to narrow files, and **Refresh** (or the 2.5 s auto-refresh) to re-read state.
+
+The layout mirrors Paseo's native Changes tab: branch + ahead/behind header, aggregate `+add -del` stats, a collapsible folder tree with per-folder stats, file rows with type icons and a right-side open-in-tab action.
 
 ## Configuration
 
@@ -110,6 +113,9 @@ If the workspace directory contains a `.code-workspace` file, its `folders[].pat
 ## Limitations
 
 - Read-only. Diff viewing only; no stage/commit/discard.
+- No Committed/Uncommitted comparison toggle or Commits section; the tree shows the working tree (plus staged, via the diff RPC).
+- File icons are [Lucide](https://lucide.dev) names, not the material icon set the native Changes tab uses.
+- Diff is unified only; no split view, syntax highlighting, or word-level diff.
 - Untracked files show `+0 -0` because additions/deletions come from `git diff` against `HEAD`.
 - A rendered diff is truncated at 8,000 lines and 2 MiB per file; the panel reports truncation.
 - Repos whose changes exceed the cap, or binary files, render as git reports them (binary notice, no inline hunks).
