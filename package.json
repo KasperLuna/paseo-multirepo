@@ -1,6 +1,7 @@
 {
   "name": "paseo-multirepo",
   "private": true,
+  "type": "module",
   "version": "0.0.0",
   "files": [
     "paseo-plugin.json",
